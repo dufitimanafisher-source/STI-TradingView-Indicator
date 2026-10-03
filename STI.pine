@@ -1,0 +1,325 @@
+//@version=6
+indicator("SAWEVA Tr Ind", shorttitle="STI", overlay=true, max_labels_count=50, max_lines_count=50, max_boxes_count=50)
+
+// =====================================================================
+// SAWEVA Trading Indicator v1.0
+// Six Entries from "The Six Entries" book
+// Pine Script v6 - Non-repainting, multi-timeframe bias confirmation
+// =====================================================================
+
+// =====================================================================
+// INPUT SECTION
+// =====================================================================
+
+// Core Settings
+group_core = "Core"
+showWarningHigherThan5m = input.bool(true, "Warn if chart > 5M", group=group_core)
+minRR = input.float(1.5, "Min Risk/Reward", minval=1.0, step=0.1, group=group_core)
+atrSlBuffer = input.float(0.5, "ATR SL Buffer", minval=0.0, step=0.1, group=group_core)
+minSLFactor = input.float(0.5, "Min SL (ATR factor)", minval=0.0, step=0.1, group=group_core)
+maxSLFactor = input.float(6.0, "Max SL (ATR factor)", minval=0.1, step=0.1, group=group_core)
+levelTolerance = input.float(0.0, "Level Tolerance", minval=0.0, step=0.1, group=group_core)
+rangeLength = input.int(20, "Range Length", minval=2, maxval=200, group=group_core)
+retestLen = input.int(8, "Retest Window", minval=1, maxval=50, group=group_core)
+cooldownLen = input.int(10, "Cooldown Bars", minval=0, maxval=200, group=group_core)
+bodyRatioMin = input.float(0.5, "Min Body Ratio", minval=0.1, maxval=1.0, step=0.05, group=group_core)
+
+// Timeframe Settings
+group_tf = "Timeframes"
+tf1d = input.string("1D", "Daily TF", options=["1D", "3D", "1W", "1M"], group=group_tf)
+tf4h = input.string("4H", "4H TF", options=["5", "15", "30", "1H", "2H", "4H", "6H", "12H", "1D"], group=group_tf)
+tf1h = input.string("1H", "1H TF", options=["1", "5", "15", "30", "1H", "2H", "4H"], group=group_tf)
+tf15m = input.string("15", "15M TF", options=["1", "5", "15", "30"], group=group_tf)
+tf5m = input.string("5", "5M TF", options=["1", "5", "15", "30"], group=group_tf)
+tf1m = input.string("1", "1M TF", options=["1", "5", "15", "30"], group=group_tf)
+
+// Entry Type Toggles
+group_entries = "Entry Toggles"
+useBreakout = input.bool(true, "1. Breakout", group=group_entries)
+usePullback = input.bool(true, "2. Pullback/Retest", group=group_entries)
+useReversal = input.bool(true, "3. Reversal", group=group_entries)
+useSRBounce = input.bool(true, "4. S/R Bounce", group=group_entries)
+useLiquiditySweep = input.bool(true, "5. Liquidity Sweep", group=group_entries)
+useContinuation = input.bool(true, "6. Continuation", group=group_entries)
+
+// =====================================================================
+// HELPER FUNCTIONS
+// =====================================================================
+
+isChartHigherThan5M() =>
+    timeframe.isintraday and timeframe.multiplier > 5
+
+getEMA(src, len) =>
+    ta.ema(src, len)
+
+getATR() =>
+    ta.atr(14)
+
+getPriceDistance(a, b) =>
+    math.abs(a - b)
+
+// =====================================================================
+// REQUEST SECURITY - NON-REPAINTING DATA
+// =====================================================================
+
+// Daily Data (shifted, lookahead off)
+d1c = request.security(syminfo.tickerid, tf1d, close[1], lookahead=barmerge.lookahead_off)
+d1o = request.security(syminfo.tickerid, tf1d, open[1], lookahead=barmerge.lookahead_off)
+d1h = request.security(syminfo.tickerid, tf1d, high[1], lookahead=barmerge.lookahead_off)
+d1l = request.security(syminfo.tickerid, tf1d, low[1], lookahead=barmerge.lookahead_off)
+d1ph = request.security(syminfo.tickerid, tf1d, high[2], lookahead=barmerge.lookahead_off)
+d1pl = request.security(syminfo.tickerid, tf1d, low[2], lookahead=barmerge.lookahead_off)
+
+// 4H Data (shifted, lookahead off)
+h4c = request.security(syminfo.tickerid, tf4h, close[1], lookahead=barmerge.lookahead_off)
+h4o = request.security(syminfo.tickerid, tf4h, open[1], lookahead=barmerge.lookahead_off)
+h4h = request.security(syminfo.tickerid, tf4h, high[1], lookahead=barmerge.lookahead_off)
+h4l = request.security(syminfo.tickerid, tf4h, low[1], lookahead=barmerge.lookahead_off)
+h4ph = request.security(syminfo.tickerid, tf4h, high[2], lookahead=barmerge.lookahead_off)
+h4pl = request.security(syminfo.tickerid, tf4h, low[2], lookahead=barmerge.lookahead_off)
+
+// 1H Data
+h1c = request.security(syminfo.tickerid, tf1h, close[1], lookahead=barmerge.lookahead_off)
+h1o = request.security(syminfo.tickerid, tf1h, open[1], lookahead=barmerge.lookahead_off)
+h1h = request.security(syminfo.tickerid, tf1h, high[1], lookahead=barmerge.lookahead_off)
+h1l = request.security(syminfo.tickerid, tf1h, low[1], lookahead=barmerge.lookahead_off)
+
+// 15M Data
+m15c = request.security(syminfo.tickerid, tf15m, close[1], lookahead=barmerge.lookahead_off)
+m15h = request.security(syminfo.tickerid, tf15m, high[1], lookahead=barmerge.lookahead_off)
+m15l = request.security(syminfo.tickerid, tf15m, low[1], lookahead=barmerge.lookahead_off)
+m15o = request.security(syminfo.tickerid, tf15m, open[1], lookahead=barmerge.lookahead_off)
+
+// 5M Data
+m5c = request.security(syminfo.tickerid, tf5m, close[1], lookahead=barmerge.lookahead_off)
+m5h = request.security(syminfo.tickerid, tf5m, high[1], lookahead=barmerge.lookahead_off)
+m5l = request.security(syminfo.tickerid, tf5m, low[1], lookahead=barmerge.lookahead_off)
+m5o = request.security(syminfo.tickerid, tf5m, open[1], lookahead=barmerge.lookahead_off)
+
+// 1M Data
+m1c = request.security(syminfo.tickerid, tf1m, close[1], lookahead=barmerge.lookahead_off)
+m1h = request.security(syminfo.tickerid, tf1m, high[1], lookahead=barmerge.lookahead_off)
+m1l = request.security(syminfo.tickerid, tf1m, low[1], lookahead=barmerge.lookahead_off)
+m1o = request.security(syminfo.tickerid, tf1m, open[1], lookahead=barmerge.lookahead_off)
+
+// Previous day high/low for liquidity
+prevDayHi = request.security(syminfo.tickerid, "1D", high[1], lookahead=barmerge.lookahead_off)
+prevDayLo = request.security(syminfo.tickerid, "1D", low[1], lookahead=barmerge.lookahead_off)
+
+// =====================================================================
+// BIAS & STRUCTURE CALCULATION
+// =====================================================================
+
+// HTF Bias Detection
+biasUP = (d1c > d1ph) or (h4c > h4ph)
+biasDN = (d1c < d1pl) or (h4c < h4pl)
+
+// Local Trend (20 & 50 EMA)
+ema20 = getEMA(close, 20)
+ema50 = getEMA(close, 50)
+localTrendUP = close > ema20 and close > ema50
+localTrendDN = close < ema20 and close < ema50
+
+// Structure: HH/HL (bullish) or LH/LL (bearish)
+HH_HL = close > ta.highest(close[1], 5) and close > close[1]
+LH_LL = close < ta.lowest(close[1], 5) and close < close[1]
+
+// Final Bias
+bullBias = biasUP or localTrendUP or HH_HL
+bearBias = biasDN or localTrendDN or LH_LL
+
+// =====================================================================
+// CONFIRMATION CANDLE STRENGTH
+// =====================================================================
+
+bodySize = math.abs(close - open)
+rangeSize = high - low
+bodyPct = bodySize / math.max(rangeSize, syminfo.mintick)
+
+confirmStrengthUP = bodyPct >= bodyRatioMin and close > high[1]
+confirmStrengthDN = bodyPct >= bodyRatioMin and close < low[1]
+
+// =====================================================================
+// ATR & LEVELS
+// =====================================================================
+
+atr = getATR()
+slBuff = atr * atrSlBuffer
+
+// Swing Highs/Lows
+swingHi = ta.highest(high, rangeLength)
+swingLo = ta.lowest(low, rangeLength)
+
+// Range Bounds
+rangeHi = ta.highest(high, rangeLength)
+rangeLo = ta.lowest(low, rangeLength)
+
+// =====================================================================
+// ENTRY DETECTION LOGIC
+// =====================================================================
+
+// Track last trade to prevent overlapping signals
+var int lastTradeIdx = na
+isInCooldown = bar_index - nz(lastTradeIdx, bar_index - cooldownLen - 1) <= cooldownLen
+
+// ===== 1. BREAKOUT ENTRY =====
+entryBreakoutUP = false
+entryBreakoutDN = false
+
+if useBreakout and barstate.isconfirmed and not isInCooldown
+    if bullBias and close > rangeHi and close > open and (close - open) > (high - close) and close > close[1]
+        entryBreakoutUP := true
+    
+    if bearBias and close < rangeLo and close < open and (open - close) > (close - low) and close < close[1]
+        entryBreakoutDN := true
+
+// ===== 2. PULLBACK/RETEST ENTRY =====
+entryPullbackUP = false
+entryPullbackDN = false
+
+if usePullback and barstate.isconfirmed and not isInCooldown
+    if bullBias and close < close[1] and close > low[1] and close > ema20 and close > ema50
+        entryPullbackUP := true
+    
+    if bearBias and close > close[1] and close < high[1] and close < ema20 and close < ema50
+        entryPullbackDN := true
+
+// ===== 3. REVERSAL ENTRY =====
+entryReversalUP = false
+entryReversalDN = false
+
+if useReversal and barstate.isconfirmed and not isInCooldown
+    if bullBias and close > ta.highest(high[5], 5) and close > close[1]
+        entryReversalUP := true
+    
+    if bearBias and close < ta.lowest(low[5], 5) and close < close[1]
+        entryReversalDN := true
+
+// ===== 4. S/R BOUNCE ENTRY =====
+entrySRBounceUP = false
+entrySRBounceDN = false
+
+if useSRBounce and barstate.isconfirmed and not isInCooldown
+    wuUp = high - close
+    wdUp = close - open
+    
+    wuDn = close - low
+    wdDn = open - close
+    
+    if bullBias and close < ta.highest(high, 20) and close > ta.lowest(low, 20) and close < close[1] and wuUp >= 2 * wdUp
+        entrySRBounceUP := true
+    
+    if bearBias and close > ta.lowest(low, 20) and close < ta.highest(high, 20) and close > close[1] and wuDn >= 2 * wdDn
+        entrySRBounceDN := true
+
+// ===== 5. LIQUIDITY SWEEP ENTRY =====
+entryLiquidityUP = false
+entryLiquidityDN = false
+
+if useLiquiditySweep and barstate.isconfirmed and not isInCooldown
+    sweepUP = close > prevDayHi and close < prevDayHi + atr
+    sweepDN = close < prevDayLo and close > prevDayLo - atr
+    
+    if bullBias and sweepUP and close < close[1] and close > open
+        entryLiquidityUP := true
+    
+    if bearBias and sweepDN and close > close[1] and close < open
+        entryLiquidityDN := true
+
+// ===== 6. CONTINUATION ENTRY =====
+entryContinueUP = false
+entryContinueDN = false
+
+if useContinuation and barstate.isconfirmed and not isInCooldown
+    if bullBias and close > ta.highest(high[1], 10) and close > close[1]
+        entryContinueUP := true
+    
+    if bearBias and close < ta.lowest(low[1], 10) and close < close[1]
+        entryContinueDN := true
+
+// ===== COMBINE ALL ENTRIES =====
+anyBuySignal = entryBreakoutUP or entryPullbackUP or entryReversalUP or entrySRBounceUP or entryLiquidityUP or entryContinueUP
+anySellSignal = entryBreakoutDN or entryPullbackDN or entryReversalDN or entrySRBounceDN or entryLiquidityDN or entryContinueDN
+
+// ===== FINAL SIGNAL GATING =====
+finalBuySignal = false
+finalSellSignal = false
+finalEntryPrice = na
+finalSLPrice = na
+finalTPPrice = na
+finalSide = ""
+
+if anyBuySignal and bullBias and confirmStrengthUP and barstate.isconfirmed
+    finalBuySignal := true
+    finalSide := "BUY"
+    finalEntryPrice := close
+    finalSLPrice := low - slBuff - levelTolerance
+    distToSL = finalEntryPrice - finalSLPrice
+    finalTPPrice := finalEntryPrice + (distToSL * minRR)
+    
+    rrCalc = distToSL / math.max(distToSL, syminfo.mintick)
+    if rrCalc < minRR
+        finalBuySignal := false
+        finalSide := ""
+        finalEntryPrice := na
+        finalSLPrice := na
+        finalTPPrice := na
+
+else if anySellSignal and bearBias and confirmStrengthDN and barstate.isconfirmed
+    finalSellSignal := true
+    finalSide := "SELL"
+    finalEntryPrice := close
+    finalSLPrice := high + slBuff + levelTolerance
+    distToSL = finalSLPrice - finalEntryPrice
+    finalTPPrice := finalEntryPrice - (distToSL * minRR)
+    
+    rrCalc = distToSL / math.max(distToSL, syminfo.mintick)
+    if rrCalc < minRR
+        finalSellSignal := false
+        finalSide := ""
+        finalEntryPrice := na
+        finalSLPrice := na
+        finalTPPrice := na
+
+// =====================================================================
+// DRAW OBJECTS & ALERTS
+// =====================================================================
+
+if finalBuySignal
+    line.new(bar_index, finalEntryPrice, bar_index + 1, finalEntryPrice, extend=extend.right, color=color.lime, width=2, style=line.style_solid)
+    label.new(bar_index, finalEntryPrice, "BUY", style=label.style_label_up, textcolor=color.white, color=color.new(color.lime, 0), size=size.small, xloc=xloc.bar_index)
+    line.new(bar_index, finalSLPrice, bar_index + 1, finalSLPrice, extend=extend.right, color=color.gray, width=1, style=line.style_dashed)
+    line.new(bar_index, finalTPPrice, bar_index + 1, finalTPPrice, extend=extend.right, color=color.teal, width=1, style=line.style_dotted)
+    
+    msgBuy = "BUY Entry=" + str.tostring(finalEntryPrice) + " SL=" + str.tostring(finalSLPrice) + " TP=" + str.tostring(finalTPPrice)
+    alert(msgBuy, alert.freq_once_per_bar_close)
+    
+    lastTradeIdx := bar_index
+
+if finalSellSignal
+    line.new(bar_index, finalEntryPrice, bar_index + 1, finalEntryPrice, extend=extend.right, color=color.red, width=2, style=line.style_solid)
+    label.new(bar_index, finalEntryPrice, "SELL", style=label.style_label_down, textcolor=color.white, color=color.new(color.red, 0), size=size.small, xloc=xloc.bar_index)
+    line.new(bar_index, finalSLPrice, bar_index + 1, finalSLPrice, extend=extend.right, color=color.gray, width=1, style=line.style_dashed)
+    line.new(bar_index, finalTPPrice, bar_index + 1, finalTPPrice, extend=extend.right, color=color.orange, width=1, style=line.style_dotted)
+    
+    msgSell = "SELL Entry=" + str.tostring(finalEntryPrice) + " SL=" + str.tostring(finalSLPrice) + " TP=" + str.tostring(finalTPPrice)
+    alert(msgSell, alert.freq_once_per_bar_close)
+    
+    lastTradeIdx := bar_index
+
+// =====================================================================
+// CHART WARNINGS
+// =====================================================================
+
+chartTFHigh = isChartHigherThan5M()
+
+if chartTFHigh and showWarningHigherThan5m and barstate.isconfirmed
+    warningMsg = "STI: Use 1M/5M only"
+    alert(warningMsg, alert.freq_once_per_bar_close)
+
+if chartTFHigh and showWarningHigherThan5m
+    label.new(bar_index, high, "STI: 1M/5M Only", style=label.style_label_left, textcolor=color.white, color=color.orange, size=size.tiny, xloc=xloc.bar_index)
+
+// =====================================================================
+// END OF SCRIPT
+// =====================================================================
